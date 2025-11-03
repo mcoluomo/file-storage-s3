@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
@@ -57,10 +58,13 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		respondWithError(w, http.StatusUnauthorized, "wrong id was given", nil)
 		return
 	}
+	var (
+		encodedImgData string = base64.StdEncoding.EncodeToString(imageData)
+		mediaType      string = header.Header.Get("Content-Type")
+	)
+	videoThumbnails[video.ID] = thumbnail{data: imageData, mediaType: mediaType}
 
-	videoThumbnails[video.ID] = thumbnail{data: imageData, mediaType: header.Header.Get("Content-Type")}
-
-	thumbnailURL := "http://localhost:8091/api/thumbnails/" + video.ID.String()
+	thumbnailURL := "data:" + mediaType + ";base64," + encodedImgData
 	video.ThumbnailURL = &thumbnailURL
 
 	if err = cfg.db.UpdateVideo(video); err != nil {
