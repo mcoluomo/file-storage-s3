@@ -48,8 +48,8 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 	log.Println("uploading thumbnail for video:", videoID, "by user:", userID)
 
 	// TODO: implement the upload here
-	const maxUploadSize int64 = 10 << 20
-	if err = r.ParseMultipartForm(maxUploadSize); err != nil {
+	const maxMemory int64 = 10 << 20
+	if err = r.ParseMultipartForm(maxMemory); err != nil {
 		respondWithError(w, http.StatusBadRequest, "Unable to parse Multipart form", err)
 		return
 	}
@@ -67,7 +67,7 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	if int64(len(fileBytes)) > maxUploadSize {
+	if int64(len(fileBytes)) > maxMemory {
 		respondWithError(w, http.StatusBadRequest, "File size exceeds the limit of 10MB", nil)
 		return
 	}
@@ -97,7 +97,7 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 	thumbnailURL := fmt.Sprintf("http://localhost:%s/assets/%s", cfg.port, fileName)
 
 	// Write the validated file data to disk in one step
-	if err := os.WriteFile(assetsFilePath, fileBytes, 0o644); err != nil {
+	if err = os.WriteFile(assetsFilePath, fileBytes, 0o644); err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Failed to save file to disk", err)
 		return
 	}
