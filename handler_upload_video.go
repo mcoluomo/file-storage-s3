@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime"
 	"net/http"
 	"os"
 
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
 )
@@ -45,7 +47,7 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	log.Println("uploading thumbnail for video:", videoID, "by user:", userID)
 
 	const maxUploadSize int64 = 1 << 30
-	http.MaxBytesReader(w, r.Body, maxUploadSize)
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize)
 
 	file, _, err := r.FormFile("video")
 	if err != nil {
@@ -60,17 +62,17 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if int64(len(fileBytes)) > maxUploadSize {
-		respondWithError(w, http.StatusBadRequest, "File size exceeds the limit of 1000MB", nil)
-		return
-	}
-
 	contentType := http.DetectContentType(fileBytes)
 	allowedTypes := map[string]bool{
 		"video/mp4": true,
 	}
 	if _, exists := allowedTypes[contentType]; !exists {
 		respondWithError(w, http.StatusBadRequest, fmt.Sprintf("Unsupported file type: %s", contentType), nil)
+		return
+	}
+	fileExt, err := mime.ExtensionsByType(contentType)
+	if err != nil || len(fileExt) == 0 {
+		respondWithError(w, http.StatusInternalServerError, "Could not determine file extension", err)
 		return
 	}
 
@@ -80,26 +82,59 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	defer tempFile.Close()
 	defer os.Remove(tempFile.Name())
+	defer tempFile.Close()
 
-	// Write the bytes directly to the open file handle
-
+	_, err = file.Seek(0, io.SeekStart)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to rewind file", err)
+		return
+	}
 	writtenBytes, err := io.Copy(tempFile, file)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Error saving file", err)
 		return
 	}
-	log.Printf("written bytes: %d", writtenBytes)
 
+	log.Printf("written bytes: %d", writtenBytes)
+	if _, err = tempFile.Seek(0, io.SeekStart); err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to rewind file", err)
+		return
+	}
 	err = cfg.db.UpdateVideo(video)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't update video", err)
 		return
 	}
-	tempFile.Seek(0, io.SeekStart)
+	hexKey, err := generateRandomKey()
+	if err != nil {
+		panic(err)
+	}
 
-	cfg.s3Client.PutObject(context.TODO())
+	key := hexKey + fileExt[3]
+	log.Print(key)
 
+	putObjectOutput, err := cfg.s3Client.PutObject(context.TODO(), &s3.PutObjectInput{
+		Bucket:      &cfg.s3Bucket,
+		Key:         &key,
+		Body:        tempFile,
+		ContentType: &contentType,
+	})
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to upload video to S3", err)
+		return
+	}
+
+	log.Printf("Successfully uploaded video. ETag: %s", *putObjectOutput.ETag)
+
+	videoURL := fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", cfg.s3Bucket, cfg.s3Region, key)
+
+	video.VideoURL = &videoURL
+	if err = cfg.db.UpdateVideo(video); err != nil {
+		respondWithError(w, http.StatusBadRequest, "failed updating video metadata", err)
+		return
+	}
+
+	log.Printf("Successfully uploaded video %s to Bucket %s", video.ID, cfg.s3Bucket)
 	respondWithJSON(w, http.StatusOK, video)
 }
